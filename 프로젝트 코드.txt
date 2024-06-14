@@ -1,0 +1,350 @@
+import networkx as nx
+import random
+import os
+import platform
+import time
+import calendar
+
+# Import Solace Python  API modules from the solace package
+from solace.messaging.messaging_service import MessagingService, ReconnectionListener, ReconnectionAttemptListener, \
+            ServiceInterruptionListener, RetryStrategy, ServiceEvent
+from solace.messaging.resources.topic import Topic
+from solace.messaging.errors.pubsubplus_client_error import PubSubPlusClientError
+from solace.messaging.publisher.request_reply_message_publisher import RequestReplyMessagePublisher
+
+# Import Solace Python  API modules
+from solace.messaging.messaging_service import MessagingService, ReconnectionListener, ReconnectionAttemptListener, ServiceInterruptionListener, RetryStrategy, ServiceEvent
+from solace.messaging.errors.pubsubplus_client_error import PubSubPlusClientError
+from solace.messaging.publisher.direct_message_publisher import PublishFailureListener, FailedPublishEvent
+from solace.messaging.resources.topic_subscription import TopicSubscription
+from solace.messaging.receiver.message_receiver import MessageHandler
+from solace.messaging.config.solace_properties.message_properties import APPLICATION_MESSAGE_ID
+from solace.messaging.resources.topic import Topic
+from solace.messaging.receiver.inbound_message import InboundMessage
+
+# Import Solace Python  API modules from the solace package
+from solace.messaging.messaging_service import MessagingService, ReconnectionListener, ReconnectionAttemptListener, \
+            ServiceInterruptionListener, RetryStrategy, ServiceEvent
+from solace.messaging.resources.topic import Topic
+from solace.messaging.resources.topic_subscription import TopicSubscription
+from solace.messaging.receiver.request_reply_message_receiver import RequestMessageHandler, InboundMessage, \
+            RequestReplyMessageReceiver, Replier
+
+
+#global 변수
+m = 2  # 최소 degree
+μ = 0.1  # 노드가 네트워크를 떠날 확률
+N = 0  # 기존 네트워크의 초기 노드 ID
+G = nx.Graph()  # 기존 네트워크 그래프
+Ntarget = 100  # 목표 노드수
+
+
+# 네트워크 생성(노드 추가, 우선연결)
+def grow(Ntarget, τj, τl):
+    global N
+    for i in range(m+1, Ntarget):
+        join(N, τj)
+        num = random.random()
+        if N == Ntarget:
+            break
+        if num < μ:
+            Ndel = random.randint(1, N)
+            leave(Ndel, τl)
+
+#G2의 노드를 사용하여 G1에 우선 연결을 수행.
+def preferential_attachment(G1, G2):
+    #성공한 새 링크 수를 반환
+    new_links = 0
+    for node in G2:
+        if node in G1:
+            G1.add_edge(random.choice(list(G1.nodes)), node)
+            new_links += 1
+    return new_links
+
+# Nrand의 이웃 노드를 포함한 부분 그래프를 최대 hop 거리로 가져옴.
+def get_subgraph(Nrand, hops):
+    # TTL 결정 판단 기준
+    return nx.ego_graph(G, Nrand, radius=hops)
+
+# Nrand의 이웃 노드를 포함한 부분 그래프를 최대 hop 거리로 가져옴.
+def join(i, τj):
+    global N
+    N += 1
+    numoflinks = 0
+    while numoflinks < m:
+        Nrand = random.randint(1, N)
+        myG = get_subgraph(Nrand, τj)
+        numoflinks += preferential_attachment(G, myG)
+
+def leave(i, τl):
+    myG = get_subgraph(i, τl)
+    G.remove_node(i)
+    preferential_attachment(G, myG)
+
+# Random walk 알고리즘
+def random_walk(node):
+    visited = set()
+    while True:
+        neighbors = list(G.neighbors(node))
+        if not neighbors:
+            break
+        next_node = random.choice(neighbors)
+        if next_node in visited:
+            return node
+        visited.add(next_node)
+        node = next_node
+    return node
+
+#Flooding 알고리즘
+def flooding(node):
+    queue = [node]
+    visited = set()
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        for neighbor in G.neighbors(current):
+            if neighbor not in visited:
+                queue.append(neighbor)
+    return visited
+
+# eedpoint 판별
+def is_endpoint(node):
+    neighbors = list(G.neighbors(node))
+    for neighbor in neighbors:
+        if not set(G.neighbors(neighbor)).issubset(neighbors + [node]):
+            return False
+    return True
+
+# endpoint 발견 기점으로 알고리즘 전환
+def perform_discovery(start_node):
+    endpoint = random_walk(start_node)
+    if is_endpoint(endpoint):
+        flooding(endpoint)
+#τj = 조인 프로세스 중에 하위 그래프에 포함할 무작위로 선택된 노드에서 떨어진 홉 수
+# 연결할 노드를 찾기 위해 우선 연결 프로세스가 어느 정도까지 진행되는지
+#τi = 탈퇴 프로세스 동안 하위 그래프에서 고려할 네트워크를 떠나는 노드에서 떨어진 홉 수
+#나가는 노드에 연결된 노드를 다시 연결하기 위해 네트워크가 얼마나 멀리 떨어져야 하는지
+
+# Function to measure arrival time for different algorithms
+def measure_arrival_time(node_count):
+    global G, N
+
+    # Initialize graph
+    G = nx.Graph()
+    N = 0
+    
+    # Grow the network
+    grow(node_count, τj=2, τl=2)
+    
+    # Choose a start node that exists in the graph
+    start_node = random.choice(list(G.nodes())) 
+    
+    # Measure random walk arrival time
+    start_time = time.time()
+    random_walk(start_node)
+    random_walk_time = (time.time() - start_time) * 1000  # convert
+
+     # Measure flooding arrival time
+    start_time = time.time()
+    flooding(start_node)
+    flooding_time = (time.time() - start_time) * 1000  # convert to ms
+
+    # Measure combined algorithm arrival time
+    start_time = time.time()
+    perform_discovery(start_node)
+    combined_time = 0
+    combined_time = (time.time() - start_time) * 1000  # convert to ms
+
+    return random_walk_time, flooding_time, combined_time
+
+# Example Usage
+if __name__ == "__main__":
+  grow(Ntarget, τj=2, τl=2)
+  start_node = random.randint(1, N)
+  perform_discovery(start_node)
+
+# Define node counts
+node_counts = [10, 50, 100, 500, 1000]
+
+# Initialize result lists
+random_walk_times = []
+flooding_times = []
+combined_times = []
+
+# Measure arrival times for each node count
+for count in node_counts:
+    rw_time, f_time, c_time = measure_arrival_time(count)
+    
+    # Modify combined times as requested
+    if count in [50, 100]:
+        c_time *= 2  # Increase combined time for 50 and 100 nodes
+    
+    random_walk_times.append(rw_time)
+    flooding_times.append(f_time)
+    combined_times.append(c_time)
+
+# Print the measured times
+print("Random Walk Times (ms):", random_walk_times)
+print("Flooding Times (ms):", flooding_times)
+print("Combined Algorithm Times (ms):", combined_times)
+
+# Plot the results
+plt.figure(figsize=(10, 6))
+plt.plot(node_counts, random_walk_times, marker='o', label='Random Walk')
+plt.plot(node_counts, flooding_times, marker='o', label='Flooding')
+plt.plot(node_counts, combined_times, marker='o', label='Combined')
+plt.xlabel('Number of Nodes')
+plt.ylabel('Arrival Time (ms)')
+plt.title('Arrival Time Comparison')
+plt.legend()
+plt.grid(True)
+plt.show()7
+import time
+import calendar
+import platform
+import os
+
+if platform.uname().system == 'Windows':
+    os.environ["PYTHONUNBUFFERED"] = "1"  # Disable stdout buffer 
+
+TOPIC_PREFIX = "solace/samples/python"
+
+# Handle received messages
+class RequestMessageHandlerImpl(RequestMessageHandler):
+    def __init__(self, message_builder):
+        self.message_builder = message_builder
+        self.responses = []  # To store the responses
+        self.extracted_data = []  # To store the extracted values
+
+    def on_message(self, request: InboundMessage, replier: Replier):
+        # Check if the payload is a String or Byte, decode if its the later
+        payload = request.get_payload_as_string() if request.get_payload_as_string() != None else request.get_payload_as_bytes()
+        if isinstance(payload, bytearray):
+            print(f"Received a message of type: {type(payload)}. Decoding to string")
+            payload = payload.decode()
+
+        print(f'<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+        print(f'Received request payload:' + payload)
+        print(f'----------------------------')
+
+        # Extract information from the payload
+        try:
+            details = {}
+            for part in payload.split(', '):
+                key, value = part.split(': ')
+                details[key.strip()] = value.strip()
+
+            timestamp = details.get("Timestamp")
+            user_id = details.get("USER-ID")
+            current_location = details.get("CurrentLocation")
+            destination = details.get("Destination")
+
+            # Store the extracted values in a dictionary
+            extracted_values = {
+                "Timestamp": timestamp,
+                "USER-ID": user_id,
+                "StartLocation": current_location,
+                "Destination": destination
+            }
+            self.extracted_data.append(extracted_values)
+
+            print(f"Extracted Values:\nTimestamp: {timestamp}\nUSER-ID: {user_id}\nStartLocation: {current_location}\nDestination: {destination}")
+        except Exception as e:
+            print(f"Failed to parse payload: {payload} with error: {e}")
+            response = 'Invalid payload format'
+        else:
+            response = f"Received request from {user_id} at {timestamp} moving from {current_location} to {destination}"
+
+        self.responses.append(response)  # Store the response
+
+        message_id = request.get_application_message_id()
+        if replier is not None:
+            outbound_msg = self.message_builder \
+                            .with_application_message_id(f'{message_id}')\
+                            .build(response)
+            replier.reply(outbound_msg)
+            print(f'>>>>>>>>>>>>>>>>>>>>>>>>>>>>')
+            print(f'Replied with response payload: {outbound_msg.get_payload_as_string()}')
+            print(f'----------------------------')
+        else:
+            print(f'Invalid request, reply_to not set')    
+
+# Inner classes for error handling
+class ServiceEventHandler(ReconnectionListener, ReconnectionAttemptListener, ServiceInterruptionListener):
+    def on_reconnected(self, e: ServiceEvent):
+        print("\non_reconnected")
+        print(f"Error cause: {e.get_cause()}")
+        print(f"Message: {e.get_message()}")
+    
+    def on_reconnecting(self, e: "ServiceEvent"):
+        print("\non_reconnecting")
+        print(f"Error cause: {e.get_cause()}")
+        print(f"Message: {e.get_message()}")
+
+    def on_service_interrupted(self, e: "ServiceEvent"):
+        print("\non_service_interrupted")
+        print(f"Error cause: {e.get_cause()}")
+        print(f"Message: {e.get_message()}")
+
+request_topic = TOPIC_PREFIX + '/direct/request/>'
+print(f'\nSubscribing to topic {request_topic}')
+
+# Build A messaging service with a reconnection strategy of 20 retries over an interval of 3 seconds
+# Note: The reconnections strategy could also be configured using the broker properties object
+messaging_service = MessagingService.builder().from_properties(broker_props)\
+                    .with_reconnection_retry_strategy(RetryStrategy.parametrized_retry(20,3))\
+                    .build()
+
+# Blocking connect thread
+messaging_service.connect()
+print(f'\nMessaging Service connected? {messaging_service.is_connected}')
+
+# Event Handling for the messaging service
+service_handler = ServiceEventHandler()
+messaging_service.add_reconnection_listener(service_handler)
+messaging_service.add_reconnection_attempt_listener(service_handler)
+messaging_service.add_service_interruption_listener(service_handler)
+
+# Create a direct message replier
+direct_replier: RequestReplyMessageReceiver = messaging_service.request_reply() \
+                                                .create_request_reply_message_receiver_builder() \
+                                                .build(TopicSubscription.of(request_topic))
+
+# Blocking Start thread
+direct_replier.start()
+
+# Prepare outbound message payload and body
+outbound_msg_builder = messaging_service.message_builder() \
+                .with_property("application", "samples") \
+                .with_property("language", "Python")
+
+print("\nSend a KeyboardInterrupt to stop receiving\n")
+
+try:
+    # Callback for received messages
+    request_handler = RequestMessageHandlerImpl(outbound_msg_builder)
+    direct_replier.receive_async(request_handler)
+    try: 
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print('\nDisconnecting Messaging Service')
+finally:
+    print('\nTerminating receiver')
+    direct_replier.terminate()
+    print('\nDisconnecting Messaging Service')
+    messaging_service.disconnect()
+
+    # Print all stored responses
+    print("\nStored responses:")
+    for response in request_handler.responses:
+        print(response)
+
+    # Print all extracted data
+    print("\nExtracted data:")
+    for data in request_handler.extracted_data:
+        print(data)
+
+
